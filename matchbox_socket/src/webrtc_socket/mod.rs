@@ -1,6 +1,6 @@
 use std::pin::Pin;
 
-use futures::{Future, FutureExt, StreamExt};
+use futures::{stream_select, Future, FutureExt, Stream, StreamExt};
 use futures_util::select;
 use log::debug;
 
@@ -34,13 +34,31 @@ use uuid::Uuid;
 
 type Packet = Box<[u8]>;
 
+pub enum WebRtcSocketEvent {
+    NewPeer { id: PeerId },
+    Message { from: PeerId, contents: Packet },
+}
+
+#[derive(Clone, Debug)]
+pub struct WebRtcSocketTx {
+    peer_messages_out: futures_channel::mpsc::Sender<(PeerId, Packet)>,
+}
+
+impl WebRtcSocketTx {
+    pub fn send<T: Into<PeerId>>(&mut self, packet: Packet, id: T) {
+        self.peer_messages_out
+            .try_send((id.into(), packet))
+            .expect("send_to failed");
+    }
+}
+
 #[derive(Debug)]
 pub struct WebRtcSocket {
+    id: PeerId,
     messages_from_peers: futures_channel::mpsc::UnboundedReceiver<(PeerId, Packet)>,
     new_connected_peers: futures_channel::mpsc::UnboundedReceiver<PeerId>,
-    peer_messages_out: futures_channel::mpsc::Sender<(PeerId, Packet)>,
+    tx: WebRtcSocketTx,
     peers: Vec<PeerId>,
-    id: PeerId,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -64,8 +82,10 @@ impl WebRtcSocket {
             Self {
                 id: id.clone(),
                 messages_from_peers,
-                peer_messages_out: peer_messages_out_tx,
                 new_connected_peers,
+                tx: WebRtcSocketTx {
+                    peer_messages_out: peer_messages_out_tx,
+                },
                 peers: vec![],
             },
             Box::pin(run_socket(
@@ -116,10 +136,30 @@ impl WebRtcSocket {
             .collect()
     }
 
+    pub fn async_receive(&mut self) -> impl Stream<Item = WebRtcSocketEvent> + '_ {
+        let peers = &mut self.peers;
+
+        stream_select!(
+            (&mut self.new_connected_peers).map(move |id| {
+                peers.push(id.clone());
+                WebRtcSocketEvent::NewPeer { id }
+            }),
+            // TODO: somehow detect and handle end of message stream
+            (&mut self.messages_from_peers).map(|(id, packet)| {
+                WebRtcSocketEvent::Message {
+                    from: id,
+                    contents: packet,
+                }
+            }),
+        )
+    }
+
     pub fn send<T: Into<PeerId>>(&mut self, packet: Packet, id: T) {
-        self.peer_messages_out
-            .try_send((id.into(), packet))
-            .expect("send_to failed");
+        self.tx.send(packet, id);
+    }
+
+    pub fn sender(&self) -> &WebRtcSocketTx {
+        &self.tx
     }
 
     pub fn id(&self) -> &PeerId {
