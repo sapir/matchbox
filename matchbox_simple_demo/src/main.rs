@@ -4,12 +4,14 @@ use log::info;
 use matchbox_socket::{WebRtcSocket, WebRtcSocketEvent};
 use std::time::{Duration, Instant};
 
+const DEFAULT_BASE_URL: &str = "ws://localhost:3536";
+
 #[cfg(target_arch = "wasm32")]
 fn main() {
     console_error_panic_hook::set_once();
     console_log::init_with_level(log::Level::Debug).unwrap();
 
-    wasm_bindgen_futures::spawn_local(async_main());
+    wasm_bindgen_futures::spawn_local(async_main(DEFAULT_BASE_URL));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -20,12 +22,15 @@ async fn main() {
     }
     pretty_env_logger::init();
 
-    async_main().await
+    let base_url = std::env::args().nth(1);
+    let base_url = base_url.as_deref().unwrap_or(DEFAULT_BASE_URL);
+
+    async_main(base_url).await
 }
 
-async fn async_main() {
+async fn async_main(base_url: &str) {
     info!("Connecting to matchbox");
-    let (mut socket, loop_fut) = WebRtcSocket::new("ws://localhost:3536/example_room");
+    let (mut socket, loop_fut) = WebRtcSocket::new(&format!("{}/example_room", base_url));
 
     info!("my id is {:?}", socket.id());
 
